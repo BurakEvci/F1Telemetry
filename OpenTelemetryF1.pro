@@ -12,11 +12,15 @@ SOURCES += \
     main.cpp \
     mainwindow.cpp \
     qcustomplot.cpp \
+    sensorfusion.cpp \
+    telemetryengine.cpp \
     udpreceiver.cpp
 
 HEADERS += \
     mainwindow.h \
     qcustomplot.h \
+    sensorfusion.h \
+    telemetryengine.h \
     telemetrytypes.h \
     udpreceiver.h
 

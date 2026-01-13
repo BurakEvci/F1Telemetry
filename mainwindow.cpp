@@ -5,194 +5,183 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , key(0)
-    , alpha(0.1)
+    , alpha(0.98)
 
 {
     ui->setupUi(this);
 
-    // --- 1. QCustomPlot KURULUMU ---
-    customPlot = new QCustomPlot();
+    // Motoru Başlat
+    engine = new TelemetryEngine();
 
-    // Grafiği, Designer'da açtığımız 'plotContainer' kutusunun içine yerleştiriyoruz
-    QVBoxLayout *layout = new QVBoxLayout(ui->plotContainer);
-    layout->setContentsMargins(0, 0, 0, 0); // Kenar boşluklarını sıfırla
-    layout->addWidget(customPlot);
-
-
-    // --- 2. CANLI TAKİP KUTUCUĞU (YENİ) ---
-    // Slider'ın yanına bir "Canlı Takip" kutusu ekleyelim
-    // (Slider'ın olduğu layout'a erişip ekliyoruz)
-    // Eğer Designer'da slider için bir layout yapmadıysan kodla ekleyelim:
-
-    chkLive = new QCheckBox("Canlı Akış (Zoom için kapat)", this);
-    chkLive->setChecked(true); // Başlangıçta canlı aksın
-    chkLive->setStyleSheet("color: white; font-weight: bold;");
-
-    // Slider'ın olduğu layout'u bulup oraya ekleyelim (ui->verticalLayout veya benzeri)
-    // Veya basitçe slider'ın üstüne/altına koyabiliriz.
-    // Şimdilik plotContainer'ın olduğu ana layout'a ekleyelim:
-    layout->addWidget(chkLive);
-
-
-
-
-
-
-
-    // Eksen Etiketleri
-    customPlot->xAxis->setLabel("Zaman (sn)");
-    customPlot->yAxis->setLabel("Hız (km/h)");
-
-    // Eksen Aralıkları (Başlangıç)
-    customPlot->xAxis->setRange(0, 10);
-    customPlot->yAxis->setRange(0, 350);
-
-    // Mouse ile grafiği kaydırabilir ve zoom yapabilirsiniz
-    customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
-
-
-    // Alıcıyı oluştur
-    telemetryLink = new UdpReceiver(this);
-    // Sinyal-Slot bağlantısını kur (Backend -> Frontend)
-    connect(telemetryLink, &UdpReceiver::dataReceived, this, &MainWindow::updateTelemetry);
-    // Dinlemeyi başlat
-    telemetryLink->startListening(5555);
-
-
-    setupChannel("SPEED", Qt::green);       // Referans (Gerçek) Hız
-    setupChannel("ACCEL", Qt::blue);        // İvme Verisi
-    setupChannel("CALC_SPEED", Qt::red);    // Bizim Hesapladığımız Hatalı Hız
-
-
-    // Log penceresini terminal gibi yapalım
-    ui->logViewer->setStyleSheet("QTextEdit { background-color: black; color: #00FF00; font-family: Consolas; font-size: 10pt; border: none; }");
-    ui->logViewer->append("Sistem Hazır. Port 5555 dinleniyor...");
-    ui->logViewer->append("Kanal Yapısı: SPEED kanalı oluşturuldu.");
-
-
-    // --- SLIDER AYARLARI ---
-    // Slider 0 ile 100 arasında değer üretsin (Biz bunu 100'e bölüp kullanacağız)
-    ui->alphaSlider->setRange(0,100),
-    ui->alphaSlider->setValue(10); // Başlangıçta 0.1 olması için 10 yapıyoruz
-
-
-    connect(ui->alphaSlider, &QSlider::valueChanged, this, [=](int value){
-        // Slider'dan gelen 0-100 değerini 0.0-1.0 arasına çevir
-        alpha = value / 100.0;
-        // Ekrana güncel değeri yaz
-        ui->lblAlphaValue->setText(QString("Alpha: %1").arg(alpha));
-    });
-
+    // Sadece fonksiyonları çağırıyoruz. Ne kadar temiz değil mi?
+    setupUI();
+    setupCharts();
+    setupChannels(); // setupChannel çağrılarını bunun içine koyacağız
+    setupNetwork();
 }
 
 MainWindow::~MainWindow()
 {
     delete ui;
+    // engine ve telemetryLink ebeveyn (parent) aldığı için veya
+    // smart pointer kullanılmadığı için burada manuel silinebilir ama zorunlu değil (Qt temizler).
 }
 
-void MainWindow::updateTelemetry(QString message)
+
+// --- ALT FONKSİYONLAR ---
+
+void MainWindow::setupUI()
 {
+    // Log Ekranı
+    ui->logViewer->setStyleSheet("QTextEdit { background-color: black; color: #00FF00; font-family: Consolas; border: none; }");
+    ui->logViewer->append("Sistem Başlatılıyor...");
 
-    // --- 1. PARSING (Çoklu Veri) ---
-    // Gelen: "SPEED:50.5,ACCEL:1.2"
-    QStringList parts = message.split(",");
+    // CheckBox
+    chkLive = new QCheckBox("Canlı Akış (Zoom için kapat)", this);
+    chkLive->setChecked(true);
+    chkLive->setStyleSheet("color: white; font-weight: bold; font-size: 10pt; margin-left: 10px;");
 
-    double rawSpeed = 0;
-    double rawAccel = 0;
-    bool hasSpeed = false;
-    bool hasAccel = false;
 
-    for (const QString &part : parts) {
-        if (part.startsWith("SPEED:")) {
-            rawSpeed = part.section(':', 1, 1).toDouble();
-            hasSpeed = true;
+    if (ui->centralwidget->layout()) {
+        // En garanti yöntem: Slider'ın bulunduğu layout'u bulup oraya eklemek
+        QLayout *controlLayout = ui->alphaSlider->parentWidget()->layout();
+        if (controlLayout) {
+            controlLayout->addWidget(chkLive);
+        } else {
+            // Hiçbir yer bulamazsa pencerenin en altına ekle
+            ui->centralwidget->layout()->addWidget(chkLive);
         }
-        else if (part.startsWith("ACCEL:")) {
-            rawAccel = part.section(':', 1, 1).toDouble();
-            hasAccel = true;
-        }
     }
 
 
-    // --- 2. SPEED KANALI (Referans) ---
-    if (hasSpeed && channels.contains("SPEED")) {
-        TelemetryChannel *ch = channels["SPEED"];
-        // LPF Filtre
-        ch->filteredValue = (rawSpeed * alpha) + (ch->filteredValue * (1.0 - alpha));
-        ch->rawValue = rawSpeed;
 
-        ch->rawGraph->addData(key, ch->rawValue);
-        ch->filteredGraph->addData(key, ch->filteredValue);
-    }
+    // Slider
+    ui->alphaSlider->setRange(50, 100); // 0.50 - 1.00 arası mantıklı
+    ui->alphaSlider->setValue(98);      // 0.98
 
-    // --- 3. ACCEL KANALI (Görselleştirmek için) ---
-    if (hasAccel && channels.contains("ACCEL")) {
-        TelemetryChannel *ch = channels["ACCEL"];
-        ch->filteredValue = (rawAccel * alpha) + (ch->filteredValue * (1.0 - alpha));
-        //ch->rawValue = rawAccel;
-
-        // İvme grafiğini şimdilik çizmesek de olur, hız grafiğini karıştırmasın.
-        // Ama veri elimizde olsun.
-    }
-
-
-    // --- 4. KRİTİK BÖLÜM: HIZ HESABI (İNTEGRAL) ---
-    // V_yeni = V_eski + (İvme * dt)
-    if (hasAccel && channels.contains("CALC_SPEED")) {
-        TelemetryChannel *calcCh = channels["CALC_SPEED"];
-
-        // Zaman adımı (Python'daki sleep süresiyle uyumlu olmalı)
-        double dt = 0.05;
-
-        // HESAPLAMA: İvme verisini (rawAccel) sürekli topluyoruz.
-        // Python'da bilerek 2.0 birim hata koyduk. Bakalım ne olacak?
-        double newVelocity = calcCh->filteredValue + (rawAccel * dt);
-
-        calcCh->filteredValue = newVelocity;
-
-        // Grafiğe ekle (Kırmızı Çizgi)
-        calcCh->filteredGraph->addData(key, newVelocity);
-    }
-
-    // --- 5. EKSEN GÜNCELLEME ---
-    // Son 10 saniyeyi gösteriyoruz
-    // Sadece "Canlı Akış" kutusu işaretliyse grafiği zorla kaydır
-    if (chkLive->isChecked()) {
-        customPlot->xAxis->setRange(key, 10, Qt::AlignRight);
-        customPlot->yAxis->setRange(-50, 350); // Y eksenini de sabitle
-    }
-    // Eğer işaretli DEĞİLSE, hiçbir şeye dokunma. Kullanıcı zoom yapsın.
-
-    // Çizimi güncelle
-    customPlot->replot(QCustomPlot::rpQueuedReplot);
-
-    // Zaman sayacını artır (Simülasyon hızıyla uyumlu artış)
-    key += 0.05;
+    connect(ui->alphaSlider, &QSlider::valueChanged, this, [=](int value){
+        alpha = value / 100.0;
+        ui->lblAlphaValue->setText(QString("Gain: %1").arg(alpha));
+    });
 }
 
+
+void MainWindow::setupCharts()
+{
+    customPlot = new QCustomPlot();
+
+    // Eğer plotContainer'ın layout'u yoksa oluştur
+    if (!ui->plotContainer->layout()) {
+        QVBoxLayout *layout = new QVBoxLayout(ui->plotContainer);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(customPlot);
+    } else {
+        ui->plotContainer->layout()->addWidget(customPlot);
+    }
+
+    customPlot->xAxis->setLabel("Zaman (sn)");
+    customPlot->yAxis->setLabel("Hız (km/h)");
+    customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
+
+
+    // --- YENİ: LEGEND (AÇIKLAMA KUTUSU) ---
+    customPlot->legend->setVisible(true);
+
+    // Yazı tipi ayarı
+    QFont legendFont = font();
+    legendFont.setPointSize(9);
+    customPlot->legend->setFont(legendFont);
+
+    // Konumu (Sağ Üst Köşe)
+    customPlot->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignLeft);
+
+    // Arka planı yarı şeffaf beyaz yapalım ki grafik görünsün
+    customPlot->legend->setBrush(QBrush(QColor(255, 255, 255, 200)));
+
+}
+
+
+void MainWindow::setupChannels()
+{
+    setupChannel("SPEED (GPS)", Qt::green);       // Referans
+    setupChannel("CALC_SPEED (ACC,IMU)", Qt::red);    // Drift
+    setupChannel("FUSION", Qt::blue);     // Çözüm (Süper İnsan)
+
+    // İvme (Mavi) opsiyonel
+    // setupChannel("ACCEL", Qt::blue);
+}
+
+
+void MainWindow::setupNetwork()
+{
+    telemetryLink = new UdpReceiver(this);
+    connect(telemetryLink, &UdpReceiver::dataReceived, this, &MainWindow::updateTelemetry);
+    telemetryLink->startListening(5555);
+    ui->logViewer->append("UDP Dinleniyor: Port 5555");
+}
+
+
+// Grafik oluşturma mantığı
 void MainWindow::setupChannel(QString name, QColor color)
 {
-    // 1. Yeni bir kanal yapısı oluştur (Heap bellekte)
     TelemetryChannel *newChannel = new TelemetryChannel();
     newChannel->name = name;
 
-    // 2. Ham veri Grafiğini (İnce Çizgi) oluştur
+    // Ham Veri (Raw) - Gizli
     newChannel->rawGraph = customPlot->addGraph();
-    newChannel->rawGraph->setPen(QPen(color, 1)); // İnce ve seçilen renkte
+    newChannel->rawGraph->setPen(QPen(color, 1));
     newChannel->rawGraph->setName(name + " (Raw)");
-    newChannel->rawGraph->setVisible(false); // <--- GİZLEDİK (Kirlilik önleme)
+    newChannel->rawGraph->setVisible(false);
 
+    newChannel->rawGraph->removeFromLegend();
 
-    // 3. Filtreli Veri Grafiğini (Kalın Çizgi) oluştur
-    // Rengi biraz koyulaştırarak fark yaratalım
+    // Filtreli Veri (Filtered) - Görünür
     newChannel->filteredGraph = customPlot->addGraph();
-    newChannel->filteredGraph->setPen(QPen(color, 3)); // Kalın ve koyu
+    newChannel->filteredGraph->setPen(QPen(color, 3));
     newChannel->filteredGraph->setName(name);
 
-    // 4. Haritaya (Map) kaydet
-    // Artık bu kanala isminden ulaşabileceğiz: channels["SPEED"]
     channels.insert(name, newChannel);
 }
+
+// Veri güncelleme mantığı
+void MainWindow::updateTelemetry(QString message)
+{
+    // 1. MOTORA VERİ GÖNDER
+    engine->setAlpha(alpha);
+    engine->processData(message, 0.05); // dt = 0.05
+
+    // 2. SONUCU AL
+    VehicleState state = engine->getState();
+
+    // 3. GRAFİKLERİ GÜNCELLE
+
+    // Yeşil (GPS)
+    if (channels.contains("SPEED")) {
+        channels["SPEED"]->rawGraph->addData(key, state.rawSpeed);
+        channels["SPEED"]->filteredGraph->addData(key, state.filteredSpeed);
+    }
+
+    // Kırmızı (Drift)
+    if (channels.contains("CALC_SPEED")) {
+        channels["CALC_SPEED"]->filteredGraph->addData(key, state.calcSpeed);
+    }
+
+    // --- SARI (FÜZYON) ---
+    // İşte aradığımız çözüm burası!
+    if (channels.contains("FUSION")) {
+        channels["FUSION"]->filteredGraph->addData(key, state.fusedSpeed);
+    }
+
+    // 4. EKSEN VE ÇİZİM
+    if (chkLive->isChecked()) {
+        customPlot->xAxis->setRange(key, 10, Qt::AlignRight);
+        customPlot->yAxis->setRange(-50, 350);
+    }
+
+    customPlot->replot(QCustomPlot::rpQueuedReplot);
+    key += 0.05;
+}
+
 
 
 
