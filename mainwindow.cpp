@@ -5,12 +5,20 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , key(0)
+    , filteredSpeed(0)
+    , alpha(0.1)
+
 {
     ui->setupUi(this);
 
     // --- 1. QCustomPlot KURULUMU ---
-    customPlot = new QCustomPlot(this);
-    setCentralWidget(customPlot); // Pencerenin ortasına yerleştir
+    customPlot = new QCustomPlot();
+
+    // Grafiği, Designer'da açtığımız 'plotContainer' kutusunun içine yerleştiriyoruz
+    QVBoxLayout *layout = new QVBoxLayout(ui->plotContainer);
+    layout->setContentsMargins(0, 0, 0, 0); // Kenar boşluklarını sıfırla
+    layout->addWidget(customPlot);
+
 
     // Grafik Ekleme (Graph 0) 1. Grafik: Ham Veri (Kırmızı ve İnce)
     customPlot->addGraph();
@@ -23,7 +31,7 @@ MainWindow::MainWindow(QWidget *parent)
     customPlot->graph(1)->setName("Filtered (Smooth)");
 
     // filteredSpeed değişkenini başlat
-    filteredSpeed = 0;
+    //filteredSpeed = 0;
 
 
     // Eksen Etiketleri
@@ -49,7 +57,25 @@ MainWindow::MainWindow(QWidget *parent)
     // Dinlemeyi başlat
     telemetryLink->startListening(5555);
 
+    // Log penceresini terminal gibi yapalım
+    ui->logViewer->setStyleSheet("QTextEdit { background-color: black; color: #00FF00; font-family: Consolas; font-size: 10pt; border: none; }");
     ui->logViewer->append("Sistem Hazır. Port 5555 dinleniyor...");
+
+    // --- SLIDER AYARLARI ---
+    // Slider 0 ile 100 arasında değer üretsin (Biz bunu 100'e bölüp kullanacağız)
+    ui->alphaSlider->setRange(0,100),
+    ui->alphaSlider->setValue(10); // Başlangıçta 0.1 olması için 10 yapıyoruz
+
+
+    connect(ui->alphaSlider, &QSlider::valueChanged, this, [=](int value){
+
+        // Slider'dan gelen 0-100 değerini 0.0-1.0 arasına çevir
+        alpha = value / 100.0;
+
+        // Ekrana güncel değeri yaz
+        ui->lblAlphaValue->setText(QString("Alpha: %1").arg(alpha));
+    });
+
 }
 
 MainWindow::~MainWindow()

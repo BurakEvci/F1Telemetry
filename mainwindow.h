@@ -31,7 +31,7 @@ private:
 
     double key; // Zaman sayacı
     double filteredSpeed; // Önceki filtrelenmiş değeri tutmak için
-    const double alpha = 0.1; // Filtre sertliği (%10 yeni veri, %90 eski veri)
+    double alpha; // Filtre sertliği (%10 yeni veri, %90 eski veri)
 
 };
 #endif // MAINWINDOW_H
