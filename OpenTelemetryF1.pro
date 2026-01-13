@@ -17,6 +17,7 @@ SOURCES += \
 HEADERS += \
     mainwindow.h \
     qcustomplot.h \
+    telemetrytypes.h \
     udpreceiver.h
 
 FORMS += \

@@ -5,7 +5,6 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , key(0)
-    , filteredSpeed(0)
     , alpha(0.1)
 
 {
@@ -20,19 +19,6 @@ MainWindow::MainWindow(QWidget *parent)
     layout->addWidget(customPlot);
 
 
-    // Grafik Ekleme (Graph 0) 1. Grafik: Ham Veri (Kırmızı ve İnce)
-    customPlot->addGraph();
-    customPlot->graph(0)->setPen(QPen(Qt::red)); // Çizgi rengi kırmızı
-    customPlot->graph(0)->setName("Hız Verisi");
-
-    // 2. Grafik: Filtrelenmiş Veri (Yeşil ve Kalın)
-    customPlot->addGraph();
-    customPlot->graph(1)->setPen(QPen(Qt::green, 3)); // Kalınlık 3
-    customPlot->graph(1)->setName("Filtered (Smooth)");
-
-    // filteredSpeed değişkenini başlat
-    //filteredSpeed = 0;
-
 
     // Eksen Etiketleri
     customPlot->xAxis->setLabel("Zaman (sn)");
@@ -42,24 +28,25 @@ MainWindow::MainWindow(QWidget *parent)
     customPlot->xAxis->setRange(0, 10);
     customPlot->yAxis->setRange(0, 350);
 
-    // --- KRİTİK F1 ÖZELLİĞİ: ETKİLEŞİM ---
     // Mouse ile grafiği kaydırabilir ve zoom yapabilirsiniz
     customPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
 
 
-
     // Alıcıyı oluştur
     telemetryLink = new UdpReceiver(this);
-
     // Sinyal-Slot bağlantısını kur (Backend -> Frontend)
     connect(telemetryLink, &UdpReceiver::dataReceived, this, &MainWindow::updateTelemetry);
-
     // Dinlemeyi başlat
     telemetryLink->startListening(5555);
+
+
+    setupChannel("SPEED", Qt::green);
 
     // Log penceresini terminal gibi yapalım
     ui->logViewer->setStyleSheet("QTextEdit { background-color: black; color: #00FF00; font-family: Consolas; font-size: 10pt; border: none; }");
     ui->logViewer->append("Sistem Hazır. Port 5555 dinleniyor...");
+    ui->logViewer->append("Kanal Yapısı: SPEED kanalı oluşturuldu.");
+
 
     // --- SLIDER AYARLARI ---
     // Slider 0 ile 100 arasında değer üretsin (Biz bunu 100'e bölüp kullanacağız)
@@ -68,10 +55,8 @@ MainWindow::MainWindow(QWidget *parent)
 
 
     connect(ui->alphaSlider, &QSlider::valueChanged, this, [=](int value){
-
         // Slider'dan gelen 0-100 değerini 0.0-1.0 arasına çevir
         alpha = value / 100.0;
-
         // Ekrana güncel değeri yaz
         ui->lblAlphaValue->setText(QString("Alpha: %1").arg(alpha));
     });
@@ -99,30 +84,58 @@ void MainWindow::updateTelemetry(QString message)
         return;
     }
 
-    // --- 2. SİNYAL İŞLEME (Low Pass Filter) ---
-    // Formül: Filtered = (Ham * alpha) + (Eski_Filtreli * (1 - alpha))
-    // alpha ne kadar küçükse (örn: 0.05), grafik o kadar "yumuşak" olur ama gecikir.
-    filteredSpeed = (rawSpeed * alpha) + (filteredSpeed * (1.0 - alpha));
+    // --- 2. VERİ YÖNETİMİ (MAP KULLANIMI) ---
+    // "SPEED" kanalını haritadan çek
+    if (!channels.contains("SPEED")) return; // Güvenlik kontrolü
+    TelemetryChannel *speedCh = channels["SPEED"];
 
-    // --- 3. GÖRSELLEŞTİRME (Plotting) ---
 
-    // Grafik 0 (Kırmızı): Ham Veri - Gürültüyü görmek için
-    customPlot->graph(0)->addData(key, rawSpeed);
 
-    // Grafik 1 (Yeşil): Filtrelenmiş Veri - Gerçek hareketi görmek için
-    customPlot->graph(1)->addData(key, filteredSpeed);
+    // --- 3. SİNYAL İŞLEME (Low Pass Filter) ---
+    //speedCh nesnesinin içindeki değeri güncelliyoruz
+    speedCh->filteredValue = (rawSpeed * alpha) + (speedCh->filteredValue * (1.0 - alpha));
+    speedCh->rawValue = rawSpeed; // Son ham veriyi de saklayalım
 
-    // --- 4. EKSEN VE GÜNCELLEME ---
 
+    // --- 4. GÖRSELLEŞTİRME (Plotting) ---
+    // Artık graph(0) veya graph(1) yok. Kanalın kendi grafiğine ekliyoruz.
+    speedCh->rawGraph->addData(key, speedCh->rawValue);
+    speedCh->filteredGraph->addData(key, speedCh->filteredValue);
+
+
+    // --- 5. EKSEN GÜNCELLEME ---
     // X eksenini kaydır (Zaman aktıkça grafik sağa kaysın)
     // Son 8 saniyeyi gösteriyoruz
     customPlot->xAxis->setRange(key, 8, Qt::AlignRight);
-
     // Çizimi güncelle
     customPlot->replot(QCustomPlot::rpQueuedReplot);
 
     // Zaman sayacını artır (Simülasyon hızıyla uyumlu artış)
     key += 0.05;
-
-
 }
+
+void MainWindow::setupChannel(QString name, QColor color)
+{
+    // 1. Yeni bir kanal yapısı oluştur (Heap bellekte)
+    TelemetryChannel *newChannel = new TelemetryChannel();
+    newChannel->name = name;
+
+    // 2. Ham veri Grafiğini (İnce Çizgi) oluştur
+    newChannel->rawGraph = customPlot->addGraph();
+    newChannel->rawGraph->setPen(QPen(color, 1)); // İnce ve seçilen renkte
+    newChannel->rawGraph->setName(name + " (Raw)");
+
+    // 3. Filtreli Veri Grafiğini (Kalın Çizgi) oluştur
+    // Rengi biraz koyulaştırarak fark yaratalım
+    newChannel->filteredGraph = customPlot->addGraph();
+    newChannel->filteredGraph->setPen(QPen(color.darker(150), 3)); // Kalın ve koyu
+    newChannel->filteredGraph->setName(name + " (Filtered)");
+
+    // 4. Haritaya (Map) kaydet
+    // Artık bu kanala isminden ulaşabileceğiz: channels["SPEED"]
+    channels.insert(name, newChannel);
+}
+
+
+
+
