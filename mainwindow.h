@@ -5,6 +5,8 @@
 #include "udpreceiver.h"
 #include "qcustomplot.h"
 #include "telemetrytypes.h"
+#include <QCheckBox>
+
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -37,6 +39,8 @@ private:
     // Artık tüm veriler (Speed, RPM, Accel) bu haritada tutulacak.
     // Erişim: channels["SPEED"]->filteredValue
     QMap<QString, TelemetryChannel*> channels;
+    QCheckBox *chkLive; // <--- YENİ: Canlı takip kontrolü
+
 
     // Yeni kanal kurulumunu otomatikleştiren yardımcı fonksiyon
     // Örn: setupChannel("SPEED", Qt::red);

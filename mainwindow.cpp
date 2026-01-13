@@ -19,6 +19,25 @@ MainWindow::MainWindow(QWidget *parent)
     layout->addWidget(customPlot);
 
 
+    // --- 2. CANLI TAKİP KUTUCUĞU (YENİ) ---
+    // Slider'ın yanına bir "Canlı Takip" kutusu ekleyelim
+    // (Slider'ın olduğu layout'a erişip ekliyoruz)
+    // Eğer Designer'da slider için bir layout yapmadıysan kodla ekleyelim:
+
+    chkLive = new QCheckBox("Canlı Akış (Zoom için kapat)", this);
+    chkLive->setChecked(true); // Başlangıçta canlı aksın
+    chkLive->setStyleSheet("color: white; font-weight: bold;");
+
+    // Slider'ın olduğu layout'u bulup oraya ekleyelim (ui->verticalLayout veya benzeri)
+    // Veya basitçe slider'ın üstüne/altına koyabiliriz.
+    // Şimdilik plotContainer'ın olduğu ana layout'a ekleyelim:
+    layout->addWidget(chkLive);
+
+
+
+
+
+
 
     // Eksen Etiketleri
     customPlot->xAxis->setLabel("Zaman (sn)");
@@ -40,7 +59,10 @@ MainWindow::MainWindow(QWidget *parent)
     telemetryLink->startListening(5555);
 
 
-    setupChannel("SPEED", Qt::green);
+    setupChannel("SPEED", Qt::green);       // Referans (Gerçek) Hız
+    setupChannel("ACCEL", Qt::blue);        // İvme Verisi
+    setupChannel("CALC_SPEED", Qt::red);    // Bizim Hesapladığımız Hatalı Hız
+
 
     // Log penceresini terminal gibi yapalım
     ui->logViewer->setStyleSheet("QTextEdit { background-color: black; color: #00FF00; font-family: Consolas; font-size: 10pt; border: none; }");
@@ -71,42 +93,76 @@ MainWindow::~MainWindow()
 void MainWindow::updateTelemetry(QString message)
 {
 
-    // --- 1. PARSING (Veriyi Ayıkla) ---
-    // Gelen veri formatı: "SPEED:155.40"
-    double rawSpeed = 0;
+    // --- 1. PARSING (Çoklu Veri) ---
+    // Gelen: "SPEED:50.5,ACCEL:1.2"
+    QStringList parts = message.split(",");
 
-    // Güvenlik kontrolü: Mesaj boş mu veya beklenen formatta mı?
-    if (message.startsWith("SPEED:")) {
-        // "SPEED:" kısmından sonrasını al ve sayıya çevir
-        rawSpeed = message.section(':', 1, 1).toDouble();
-    } else {
-        // Eğer SPEED verisi yoksa fonksiyondan çık (Hata almamak için)
-        return;
+    double rawSpeed = 0;
+    double rawAccel = 0;
+    bool hasSpeed = false;
+    bool hasAccel = false;
+
+    for (const QString &part : parts) {
+        if (part.startsWith("SPEED:")) {
+            rawSpeed = part.section(':', 1, 1).toDouble();
+            hasSpeed = true;
+        }
+        else if (part.startsWith("ACCEL:")) {
+            rawAccel = part.section(':', 1, 1).toDouble();
+            hasAccel = true;
+        }
     }
 
-    // --- 2. VERİ YÖNETİMİ (MAP KULLANIMI) ---
-    // "SPEED" kanalını haritadan çek
-    if (!channels.contains("SPEED")) return; // Güvenlik kontrolü
-    TelemetryChannel *speedCh = channels["SPEED"];
+
+    // --- 2. SPEED KANALI (Referans) ---
+    if (hasSpeed && channels.contains("SPEED")) {
+        TelemetryChannel *ch = channels["SPEED"];
+        // LPF Filtre
+        ch->filteredValue = (rawSpeed * alpha) + (ch->filteredValue * (1.0 - alpha));
+        ch->rawValue = rawSpeed;
+
+        ch->rawGraph->addData(key, ch->rawValue);
+        ch->filteredGraph->addData(key, ch->filteredValue);
+    }
+
+    // --- 3. ACCEL KANALI (Görselleştirmek için) ---
+    if (hasAccel && channels.contains("ACCEL")) {
+        TelemetryChannel *ch = channels["ACCEL"];
+        ch->filteredValue = (rawAccel * alpha) + (ch->filteredValue * (1.0 - alpha));
+        //ch->rawValue = rawAccel;
+
+        // İvme grafiğini şimdilik çizmesek de olur, hız grafiğini karıştırmasın.
+        // Ama veri elimizde olsun.
+    }
 
 
+    // --- 4. KRİTİK BÖLÜM: HIZ HESABI (İNTEGRAL) ---
+    // V_yeni = V_eski + (İvme * dt)
+    if (hasAccel && channels.contains("CALC_SPEED")) {
+        TelemetryChannel *calcCh = channels["CALC_SPEED"];
 
-    // --- 3. SİNYAL İŞLEME (Low Pass Filter) ---
-    //speedCh nesnesinin içindeki değeri güncelliyoruz
-    speedCh->filteredValue = (rawSpeed * alpha) + (speedCh->filteredValue * (1.0 - alpha));
-    speedCh->rawValue = rawSpeed; // Son ham veriyi de saklayalım
+        // Zaman adımı (Python'daki sleep süresiyle uyumlu olmalı)
+        double dt = 0.05;
 
+        // HESAPLAMA: İvme verisini (rawAccel) sürekli topluyoruz.
+        // Python'da bilerek 2.0 birim hata koyduk. Bakalım ne olacak?
+        double newVelocity = calcCh->filteredValue + (rawAccel * dt);
 
-    // --- 4. GÖRSELLEŞTİRME (Plotting) ---
-    // Artık graph(0) veya graph(1) yok. Kanalın kendi grafiğine ekliyoruz.
-    speedCh->rawGraph->addData(key, speedCh->rawValue);
-    speedCh->filteredGraph->addData(key, speedCh->filteredValue);
+        calcCh->filteredValue = newVelocity;
 
+        // Grafiğe ekle (Kırmızı Çizgi)
+        calcCh->filteredGraph->addData(key, newVelocity);
+    }
 
     // --- 5. EKSEN GÜNCELLEME ---
-    // X eksenini kaydır (Zaman aktıkça grafik sağa kaysın)
-    // Son 8 saniyeyi gösteriyoruz
-    customPlot->xAxis->setRange(key, 8, Qt::AlignRight);
+    // Son 10 saniyeyi gösteriyoruz
+    // Sadece "Canlı Akış" kutusu işaretliyse grafiği zorla kaydır
+    if (chkLive->isChecked()) {
+        customPlot->xAxis->setRange(key, 10, Qt::AlignRight);
+        customPlot->yAxis->setRange(-50, 350); // Y eksenini de sabitle
+    }
+    // Eğer işaretli DEĞİLSE, hiçbir şeye dokunma. Kullanıcı zoom yapsın.
+
     // Çizimi güncelle
     customPlot->replot(QCustomPlot::rpQueuedReplot);
 
@@ -124,12 +180,14 @@ void MainWindow::setupChannel(QString name, QColor color)
     newChannel->rawGraph = customPlot->addGraph();
     newChannel->rawGraph->setPen(QPen(color, 1)); // İnce ve seçilen renkte
     newChannel->rawGraph->setName(name + " (Raw)");
+    newChannel->rawGraph->setVisible(false); // <--- GİZLEDİK (Kirlilik önleme)
+
 
     // 3. Filtreli Veri Grafiğini (Kalın Çizgi) oluştur
     // Rengi biraz koyulaştırarak fark yaratalım
     newChannel->filteredGraph = customPlot->addGraph();
-    newChannel->filteredGraph->setPen(QPen(color.darker(150), 3)); // Kalın ve koyu
-    newChannel->filteredGraph->setName(name + " (Filtered)");
+    newChannel->filteredGraph->setPen(QPen(color, 3)); // Kalın ve koyu
+    newChannel->filteredGraph->setName(name);
 
     // 4. Haritaya (Map) kaydet
     // Artık bu kanala isminden ulaşabileceğiz: channels["SPEED"]
